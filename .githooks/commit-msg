@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# commit-msg hook: enforce subject + body conventions.
+# Subject <= 50 chars, capitalized, no trailing period, blank line
+# before body, body wrapped at 72. Activate via `make hooks`.
+
+set -eu
+
+msg_file="${1:-}"
+[ -z "$msg_file" ] && exit 0
+
+# Skip merges, reverts, fixups, squashes — git generates these for us.
+first_line=$(head -n 1 "$msg_file")
+case "$first_line" in
+    "Merge "*|"Revert "*|"fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
+esac
+
+fail() {
+    echo "commit-msg: $1" >&2
+    exit 1
+}
+
+# Subject line.
+subject_len=${#first_line}
+[ "$subject_len" -le 50 ] || fail "subject exceeds 50 chars ($subject_len) — keep it concise"
+
+case "$first_line" in
+    [A-Z]*) ;;
+    *) fail "subject must start with a capital letter" ;;
+esac
+
+case "$first_line" in
+    *.) fail "subject must not end with a period" ;;
+esac
+
+# If the message has more than one line, line 2 must be blank, and body lines wrap at 72.
+total_lines=$(wc -l < "$msg_file" | tr -d '[:space:]')
+if [ "$total_lines" -gt 1 ]; then
+    second_line=$(sed -n '2p' "$msg_file")
+    [ -z "$second_line" ] || fail "subject must be followed by a blank line before the body"
+
+    awk 'NR>2 && length>72 {
+        printf "commit-msg: body line %d exceeds 72 chars (%d): %s\n", NR, length, $0 > "/dev/stderr"
+        bad=1
+    } END { exit bad+0 }' "$msg_file" || exit 1
+fi
+
+exit 0

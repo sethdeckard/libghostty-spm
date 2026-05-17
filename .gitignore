@@ -1,0 +1,18 @@
+# Build outputs
+dist/
+zig-out/
+.zig-cache/
+
+# Ghostty submodule build artifacts (the submodule tree itself is
+# tracked via the gitlink; its build outputs are not)
+vendor/ghostty/zig-out/
+vendor/ghostty/.zig-cache/
+vendor/ghostty/macos/GhosttyKit.xcframework/
+vendor/ghostty/macos/build/
+
+# SwiftPM
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store

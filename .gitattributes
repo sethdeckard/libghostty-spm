@@ -1,0 +1,9 @@
+# Vendored, build-generated Ghostty resource tree, shipped byte-for-byte
+# via the GhosttyKitResources target's Bundle.module. Mark the whole
+# subtree binary (-text) so git applies NO text/EOL/encoding
+# normalization: that would corrupt the compiled terminfo entries and
+# desync the committed bytes from what build-xcframework.sh produces,
+# firing release.sh's resources gate spuriously forever. The tree is
+# build-generated and never hand-edited, so losing per-line diffs on
+# the theme/shell-integration text files is an acceptable trade.
+Sources/GhosttyKitResources/Resources/** -text
