@@ -124,3 +124,19 @@ let dir = GhosttyKitResources.directoryURL
 
 Point libghostty at `dir` (via `GHOSTTY_RESOURCES_DIR` or the surface
 config). No asset download, no extraction step.
+
+## License
+
+MIT (`LICENSE`), matching Ghostty. That covers the packaging authored
+here — the build and release scripts, `Package.swift`, the resources
+target, and the docs.
+
+`THIRD-PARTY-NOTICES.md` reproduces Ghostty's copyright notice and
+lists what the xcframework and resource tree carry with them — read it
+before shipping an app. Most components are MIT or BSD-style, though
+several attach conditions of their own (Apache-2.0, MPL-2.0, OFL-1.1,
+CC BY). Two merit special attention because they can affect what you
+ship: a few Kitty-derived shell-integration scripts are GPL-3.0, and
+`libintl` is statically linked under LGPL. Those apply whatever your
+app is licensed as; a copyleft app just tends to satisfy them
+incidentally. Neither changes this package's license.

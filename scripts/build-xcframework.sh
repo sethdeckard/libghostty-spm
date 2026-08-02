@@ -200,6 +200,15 @@ cp -R "$RESOURCE_SRC/terminfo" "$RESOURCE_DEST/terminfo"
 cp -R "$RESOURCE_SRC/ghostty/shell-integration" "$RESOURCE_DEST/ghostty/shell-integration"
 cp -R "$RESOURCE_SRC/ghostty/themes" "$RESOURCE_DEST/ghostty/themes"
 
+# The Kitty-derived bash/zsh integration scripts are GPL-3.0-or-later
+# (each says so in its own header); the rest of the tree is MIT. GPLv3
+# §4 wants a copy of the license conveyed alongside them, and Ghostty
+# ships none — so place ours beside them, making the bundle we hand to
+# consumers self-contained. Must happen here, not by hand: the tree
+# above is wiped every build, and a hand-added file would also trip
+# release.sh's resources gate as untracked drift.
+cp licenses/GPL-3.0.txt "$RESOURCE_DEST/ghostty/shell-integration/GPL-3.0.txt"
+
 say "built $ARTIFACT_DEST"
 say "regenerated $RESOURCE_DEST (terminfo + shell-integration + themes)"
 say "  Ghostty: $DESCRIBE ($HEAD)"

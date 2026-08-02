@@ -58,7 +58,9 @@ lacks the embedding C API.
 pin** — no version file. `git submodule update --init vendor/ghostty`
 checks out exactly the built commit. Bump: checkout a new commit in
 the submodule, `git add vendor/ghostty`, cut a release. Treat every
-bump as a `ghostty.h` API audit (the C API is unversioned upstream).
+bump as a `ghostty.h` API audit (the C API is unversioned upstream)
+and a licensing audit (`THIRD-PARTY-NOTICES.md` names the pin it was
+audited against; its last section says what to re-check).
 If a bump changes Ghostty's required zig minor, install the matching
 keg-only Homebrew formula and update the version check in the build
 script.
