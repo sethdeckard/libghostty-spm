@@ -8,8 +8,24 @@ set -eu
 msg_file="${1:-}"
 [ -z "$msg_file" ] && exit 0
 
+cleaned_msg=$(mktemp "${TMPDIR:-/tmp}/libghostty-commit-msg.XXXXXX")
+trap 'rm -f "$cleaned_msg"' EXIT HUP INT TERM
+
+# commit-msg receives the editor buffer before Git removes its instructions
+# and, with commit.verbose enabled, the diff below the scissors line. Validate
+# only the message Git will retain.
+comment_char=$(git config --get core.commentChar || true)
+case "$comment_char" in
+    ""|auto) comment_char="#" ;;
+esac
+
+awk -v scissors="$comment_char ------------------------ >8 ------------------------" '
+    $0 == scissors { exit }
+    { print }
+' "$msg_file" | git stripspace --strip-comments > "$cleaned_msg"
+
 # Skip merges, reverts, fixups, squashes — git generates these for us.
-first_line=$(head -n 1 "$msg_file")
+first_line=$(head -n 1 "$cleaned_msg")
 case "$first_line" in
     "Merge "*|"Revert "*|"fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
 esac
@@ -33,15 +49,15 @@ case "$first_line" in
 esac
 
 # If the message has more than one line, line 2 must be blank, and body lines wrap at 72.
-total_lines=$(wc -l < "$msg_file" | tr -d '[:space:]')
+total_lines=$(wc -l < "$cleaned_msg" | tr -d '[:space:]')
 if [ "$total_lines" -gt 1 ]; then
-    second_line=$(sed -n '2p' "$msg_file")
+    second_line=$(sed -n '2p' "$cleaned_msg")
     [ -z "$second_line" ] || fail "subject must be followed by a blank line before the body"
 
     awk 'NR>2 && length>72 {
         printf "commit-msg: body line %d exceeds 72 chars (%d): %s\n", NR, length, $0 > "/dev/stderr"
         bad=1
-    } END { exit bad+0 }' "$msg_file" || exit 1
+    } END { exit bad+0 }' "$cleaned_msg" || exit 1
 fi
 
 exit 0
