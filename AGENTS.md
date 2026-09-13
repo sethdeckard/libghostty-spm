@@ -51,6 +51,12 @@ lacks the embedding C API.
   (`nm` against `REQUIRED_SYMBOLS`, the C API this package promises).
   Trust the gate, not zig's exit code. If the gate fails the build is
   wrong — fix flags, do not loosen the gate.
+- **Symbol checks use a here-string, never `nm … | grep -q`.** Both
+  scripts run under `pipefail`, and `grep -q` exits at its first match,
+  which SIGPIPEs whatever is feeding it. The pipeline then reports 141
+  and a symbol that is present reads as missing, which looks exactly
+  like the libtool race below and is not. `grep -q "…" <<< "$syms"`
+  has no pipeline and no such failure.
 - **Never vendor a third-party prebuilt** (e.g. another project's
   xcframework). We build from pinned source. The whole point.
 
