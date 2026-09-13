@@ -41,6 +41,7 @@ Package.swift                 products: GhosttyKit (.binaryTarget url+checksum),
                               GhosttyKitResources (in-repo, Bundle.module)
 Sources/GhosttyKitResources/  tracked resource tree, regenerated each build
 vendor/ghostty/               git submodule @ pinned commit — source + pin
+patches/                      local Ghostty changes, applied per build
 scripts/build-xcframework.sh  brew zig@0.15, the load-bearing flags, symbol gate
 scripts/release.sh            build → ditto-zip → compute-checksum → gh release
 ```
@@ -49,11 +50,15 @@ The submodule gitlink **is** the Ghostty pin — git-native, no version
 file. `git submodule update --init vendor/ghostty` checks out exactly
 the built commit.
 
+Changes this package makes to Ghostty live in `patches/`, not in the
+submodule. The build applies them and reverts them on exit, so the
+gitlink always names a real upstream commit. See `patches/README.md`.
+
 ## Building locally
 
 ```sh
 brew install zig@0.15
-xcodebuild -downloadComponent MetalToolchain   # one-time, Xcode 26+
+xcodebuild -downloadComponent MetalToolchain   # after every Xcode update
 git submodule update --init vendor/ghostty
 ./scripts/build-xcframework.sh                 # → dist/GhosttyKit.xcframework
 ```
@@ -97,10 +102,12 @@ the release is published — resolved by pinning per tag:
 ```sh
 cd vendor/ghostty && git fetch origin && git checkout <new-commit>
 cd ../.. && git add vendor/ghostty
+make build    # applies patches/ in order; names the first that fails
 ```
 
-Then cut a new release. Treat every bump as a `ghostty.h` API audit —
-upstream is explicit that the libghostty C API is not yet versioned.
+Regenerate any patch the build reports as stale, then cut a new
+release. Treat every bump as a `ghostty.h` API audit — upstream is
+explicit that the libghostty C API is not yet versioned.
 If a bump changes Ghostty's required zig minor, install the matching
 keg-only Homebrew formula and update the version check in
 `scripts/build-xcframework.sh`.

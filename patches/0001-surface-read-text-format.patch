@@ -1,0 +1,206 @@
+diff --git i/include/ghostty.h w/include/ghostty.h
+index b099741fc..5850dd54a 100644
+--- i/include/ghostty.h
++++ w/include/ghostty.h
+@@ -440,6 +440,11 @@ typedef struct {
+   bool rectangle;
+ } ghostty_selection_s;
+ 
++typedef enum {
++  GHOSTTY_TEXT_FORMAT_PLAIN,
++  GHOSTTY_TEXT_FORMAT_VT,
++} ghostty_text_format_e;
++
+ typedef struct {
+   const char* key;
+   const char* value;
+@@ -1159,6 +1164,10 @@ GHOSTTY_API bool ghostty_surface_read_selection(ghostty_surface_t, ghostty_text_
+ GHOSTTY_API bool ghostty_surface_read_text(ghostty_surface_t,
+                                               ghostty_selection_s,
+                                               ghostty_text_s*);
++GHOSTTY_API bool ghostty_surface_read_text_format(ghostty_surface_t,
++                                                     ghostty_selection_s,
++                                                     ghostty_text_format_e,
++                                                     ghostty_text_s*);
+ GHOSTTY_API void ghostty_surface_free_text(ghostty_surface_t, ghostty_text_s*);
+ 
+ #ifdef __APPLE__
+diff --git i/src/Surface.zig w/src/Surface.zig
+index 5d16f3326..c485813bf 100644
+--- i/src/Surface.zig
++++ w/src/Surface.zig
+@@ -1919,11 +1919,30 @@ pub fn dumpTextLocked(
+     self: *Surface,
+     alloc: Allocator,
+     sel: terminal.Selection,
++) !Text {
++    return try self.dumpTextFormattedLocked(alloc, sel, .plain);
++}
++
++/// Same as `dumpTextLocked` but emits the text in the given format. A
++/// styled format such as `.vt` preserves colors and styles as escape
++/// sequences.
++///
++/// Styled output is not the plain text plus escapes. It separates rows
++/// with \r\n rather than \n, and emits a styled space for a trailing
++/// cell that carries styling but no text, which the plain format omits.
++/// The two match after normalizing \r\n to \n, stripping escape
++/// sequences, and trimming trailing whitespace on each row.
++pub fn dumpTextFormattedLocked(
++    self: *Surface,
++    alloc: Allocator,
++    sel: terminal.Selection,
++    emit: terminal.formatter.Format,
+ ) !Text {
+     // Read out the text
+     const text = try self.io.terminal.screens.active.selectionString(alloc, .{
+         .sel = sel,
+         .trim = false,
++        .emit = emit,
+     });
+     errdefer alloc.free(text);
+ 
+diff --git i/src/apprt/embedded.zig w/src/apprt/embedded.zig
+index 730913eba..a6aa81a23 100644
+--- i/src/apprt/embedded.zig
++++ w/src/apprt/embedded.zig
+@@ -1304,6 +1304,24 @@ pub const CAPI = struct {
+         }
+     };
+ 
++    // ghostty_text_format_e
++    const TextFormat = enum(c_int) {
++        plain = 0,
++        vt = 1,
++
++        /// The core format this maps to. Mapped by tag name rather than
++        /// integer value: the core enum's values are not stable across
++        /// build targets.
++        fn core(self: TextFormat) terminal.formatter.Format {
++            return switch (self) {
++                inline else => |tag| @field(
++                    terminal.formatter.Format,
++                    @tagName(tag),
++                ),
++            };
++        }
++    };
++
+     // ghostty_point_s
+     const Point = extern struct {
+         tag: Tag,
+@@ -1618,7 +1636,7 @@ pub const CAPI = struct {
+         const core_sel = core_surface.io.terminal.screens.active.selection orelse return false;
+ 
+         // Read the text from the selection.
+-        return readTextLocked(surface, core_sel, result);
++        return readTextLocked(surface, core_sel, .plain, result);
+     }
+ 
+     /// Read some arbitrary text from the surface.
+@@ -1638,20 +1656,62 @@ pub const CAPI = struct {
+             surface.core_surface.renderer_state.terminal.screens.active,
+         ) orelse return false;
+ 
+-        return readTextLocked(surface, core_sel, result);
++        return readTextLocked(surface, core_sel, .plain, result);
++    }
++
++    /// Same as ghostty_surface_read_text but emits the text in the given
++    /// format. GHOSTTY_TEXT_FORMAT_VT preserves colors and styles as
++    /// escape sequences, predominantly SGR.
++    ///
++    /// Rows are separated by \r\n rather than \n, so the cursor returns
++    /// to column 0 when the output is replayed into a terminal.
++    ///
++    /// VT output additionally includes trailing cells that carry styling
++    /// but no text, such as regions erased with a background color,
++    /// emitted as styled spaces. The plain read omits them. After
++    /// normalizing \r\n to \n, stripping escape sequences, and trimming
++    /// trailing whitespace on each row, the two are identical.
++    ///
++    /// Row blankness ignores styling, so a row that is entirely
++    /// background color with no text is dropped in both formats. A
++    /// colored region survives only on a row holding at least one
++    /// character.
++    ///
++    /// Palette-indexed colors are emitted as palette indices rather than
++    /// being resolved to RGB, so the consumer applies its own palette.
++    /// Direct RGB colors are emitted as-is.
++    ///
++    /// Free the result with ghostty_surface_free_text, as with the plain
++    /// read. This is an expensive operation; cache and throttle it.
++    export fn ghostty_surface_read_text_format(
++        surface: *Surface,
++        sel: Selection,
++        format: TextFormat,
++        result: *Text,
++    ) bool {
++        surface.core_surface.renderer_state.mutex.lock();
++        defer surface.core_surface.renderer_state.mutex.unlock();
++
++        const core_sel = sel.core(
++            surface.core_surface.renderer_state.terminal.screens.active,
++        ) orelse return false;
++
++        return readTextLocked(surface, core_sel, format.core(), result);
+     }
+ 
+     fn readTextLocked(
+         surface: *Surface,
+         core_sel: terminal.Selection,
++        emit: terminal.formatter.Format,
+         result: *Text,
+     ) bool {
+         const core_surface = &surface.core_surface;
+ 
+         // Get our text directly from the core surface.
+-        const text = core_surface.dumpTextLocked(
++        const text = core_surface.dumpTextFormattedLocked(
+             global.alloc,
+             core_sel,
++            emit,
+         ) catch |err| {
+             log.warn("error reading text err={}", .{err});
+             return false;
+@@ -2218,7 +2278,7 @@ pub const CAPI = struct {
+             };
+ 
+             // Read the selection
+-            return readTextLocked(ptr, sel, result);
++            return readTextLocked(ptr, sel, .plain, result);
+         }
+ 
+         export fn ghostty_inspector_metal_init(ptr: *Inspector, device: objc.c.id) bool {
+diff --git i/src/terminal/Screen.zig w/src/terminal/Screen.zig
+index 39fdd6109..e0e0e6a1f 100644
+--- i/src/terminal/Screen.zig
++++ w/src/terminal/Screen.zig
+@@ -15,6 +15,7 @@ const Selection = @import("Selection.zig");
+ const PageList = @import("PageList.zig");
+ const StringMap = @import("StringMap.zig");
+ const ScreenFormatter = @import("formatter.zig").ScreenFormatter;
++const Format = @import("formatter.zig").Format;
+ const osc = @import("osc.zig");
+ const pagepkg = @import("page.zig");
+ const point = @import("point.zig");
+@@ -2442,6 +2443,10 @@ pub const SelectionString = struct {
+     /// If true, trim whitespace around the selection.
+     trim: bool = true,
+ 
++    /// The format to emit. Plain text by default; styled formats such as
++    /// `.vt` preserve colors and styles as escape sequences.
++    emit: Format = .plain,
++
+     /// If non-null, a stringmap will be written here. This will use
+     /// the same allocator as the call to selectionString. The string will
+     /// be duplicated here and in the return value so both must be freed.
+@@ -2470,7 +2475,7 @@ pub fn selectionString(
+     var formatter: ScreenFormatter = .init(
+         self,
+         .{
+-            .emit = .plain,
++            .emit = opts.emit,
+             .unwrap = true,
+             .trim = opts.trim,
+         },

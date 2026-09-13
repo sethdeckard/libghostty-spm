@@ -35,7 +35,9 @@ lacks the embedding C API.
   devShell pins the brew variant for the same reason. `brew install
   zig@0.15`.
 - **Metal Toolchain** is a separate Xcode 26 component:
-  `xcodebuild -downloadComponent MetalToolchain`.
+  `xcodebuild -downloadComponent MetalToolchain`. An Xcode update drops
+  it. The build then fails compiling `shaders.metal` with "cannot
+  execute tool 'metal'", so re-download it after every Xcode update.
 - **Build flags** (`scripts/build-xcframework.sh`): `-Doptimize=
   ReleaseFast -Dstrip=false -Demit-xcframework=true -Dxcframework-
   target=native`. `-Dstrip=false` is mandatory (ReleaseFast strips
@@ -46,21 +48,35 @@ lacks the embedding C API.
   (`SwiftUICore` restricted, xcodebuild exit 65). This is expected and
   tolerated — the xcframework is produced *before* that failure. The
   script `set +e`s the zig build and **gates on a symbol check**
-  (`nm … ' T _ghostty_surface_new$'`). Trust the gate, not zig's exit
-  code. If the gate fails the build is wrong — fix flags, do not
-  loosen the gate.
+  (`nm` against `REQUIRED_SYMBOLS`, the C API this package promises).
+  Trust the gate, not zig's exit code. If the gate fails the build is
+  wrong — fix flags, do not loosen the gate.
 - **Never vendor a third-party prebuilt** (e.g. another project's
   xcframework). We build from pinned source. The whole point.
 
 ## Source + pin
 
-`vendor/ghostty` is a git submodule; **the gitlink commit is the
-pin** — no version file. `git submodule update --init vendor/ghostty`
-checks out exactly the built commit. Bump: checkout a new commit in
-the submodule, `git add vendor/ghostty`, cut a release. Treat every
-bump as a `ghostty.h` API audit (the C API is unversioned upstream)
-and a licensing audit (`THIRD-PARTY-NOTICES.md` names the pin it was
-audited against; its last section says what to re-check).
+The pin is two things: the `vendor/ghostty` gitlink commit, and the
+patch files under `patches/`.
+
+`vendor/ghostty` is a git submodule and its gitlink commit is the
+Ghostty pin, with no version file. `git submodule update --init
+vendor/ghostty` checks out exactly the built commit. Nothing is ever
+committed into the submodule, so the gitlink always names a commit that
+exists upstream.
+
+Local engine changes live in `patches/`, applied by the build in lexical
+order and reverted on exit. `GHOSTTY_VERSION` records which patches a
+build used, and `release.sh` refuses to publish while they are
+uncommitted. Read `patches/README.md` before adding or regenerating one.
+
+Bump: checkout a new commit in the submodule, `git add vendor/ghostty`,
+cut a release. Treat every bump as a `ghostty.h` API audit (the C API is
+unversioned upstream), a licensing audit (`THIRD-PARTY-NOTICES.md` names
+the pin it was audited against; its last section says what to re-check),
+and a patch audit (`make build` applies the series and names the first
+patch that no longer applies).
+
 If a bump changes Ghostty's required zig minor, install the matching
 keg-only Homebrew formula and update the version check in the build
 script.
@@ -83,15 +99,19 @@ Ghostty app-link race cannot be won on an ephemeral runner; see
 `releaseTag` / `checksum` into `Package.swift` **on that tag**. The
 zip MUST be made with `ditto` (framework-safe), not `zip -r`.
 
-Two release gates, both in `release.sh`, enforcing one invariant —
+Three release gates, all in `release.sh`, enforcing one invariant —
 *committed tree == built tree == the Ghostty the published binary was
-built from*: (1) the embedding-symbol `nm` check on the frozen `dist/`
-xcframework; (2) a resources-sync check that fails if the build
+built from*: (1) an `nm` check of `REQUIRED_SYMBOLS` against the frozen
+`dist/` xcframework; (2) a resources-sync check that fails if the build
 regenerated `Sources/GhosttyKitResources/Resources` differently from
-the committed tree. On a Ghostty pin bump you MUST commit the
-regenerated resource diff onto the release tag — the binary is a
-release asset but the resources ship from the tagged source, so an
-uncommitted diff publishes a binary paired with stale resources.
+the committed tree; (3) a patch check that fails while `patches/` or
+`GHOSTTY_VERSION` is uncommitted, since the binary is built from the
+pinned Ghostty plus that series and the tag has to carry it.
+
+On a Ghostty pin bump you MUST commit the regenerated resource diff
+onto the release tag — the binary is a release asset but the resources
+ship from the tagged source, so an uncommitted diff publishes a binary
+paired with stale resources.
 
 ## Build reality (read before "fixing" the gate)
 

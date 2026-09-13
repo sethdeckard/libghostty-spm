@@ -3,7 +3,9 @@
 # pinned Ghostty submodule.
 #
 # Source + pin: vendor/ghostty (git submodule; the gitlink commit IS
-# the pin — run `git submodule update --init vendor/ghostty` first).
+# the pin — run `git submodule update --init vendor/ghostty` first)
+# PLUS patches/, applied to that commit for the duration of this build
+# and reverted on exit. See patches/README.md.
 # Output: dist/GhosttyKit.xcframework (gitignored build artifact) +
 # Sources/GhosttyKitResources/Resources/ (tracked — the resource tree
 # ships in-repo via the GhosttyKitResources SwiftPM target, so every
@@ -42,10 +44,82 @@ HEAD=$(git -C "$GHOSTTY_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
 [ "$PIN" = "unknown" ] || [ "$PIN" = "$HEAD" ] \
     || fail "submodule HEAD ($HEAD) != pinned gitlink ($PIN) — 'git submodule update vendor/ghostty'"
 DESCRIBE=$(git -C "$GHOSTTY_DIR" describe --tags --always 2>/dev/null || echo unknown)
+
+# ── Patches ────────────────────────────────────────────────────────────
+# vendor/ghostty tracks upstream exactly; local engine changes live as
+# patch files here and are applied for this build only, then reverted by
+# the EXIT trap. That is what keeps `git submodule status` honest — the
+# gitlink never carries a commit no remote has — so GHOSTTY_VERSION
+# records the patch list as part of the pin.
+PATCHES=()
+while IFS= read -r patch_file; do
+    [ -n "$patch_file" ] && PATCHES+=("$patch_file")
+done < <(find "$PWD/patches" -maxdepth 1 -name '*.patch' 2>/dev/null | sort)
+
+if [ "${#PATCHES[@]}" -gt 0 ]; then
+    PATCH_NAMES=""
+    for patch_file in "${PATCHES[@]}"; do
+        PATCH_NAMES="${PATCH_NAMES:+$PATCH_NAMES }$(basename "$patch_file")"
+    done
+else
+    PATCH_NAMES="none"
+fi
+
 # Tracked traceability: package tags are independent SemVer; this
-# records exactly which Ghostty each build/release maps to.
-printf 'ghostty: %s\ncommit:  %s\n' "$DESCRIBE" "$HEAD" > GHOSTTY_VERSION
+# records exactly which Ghostty (and which patches on top of it) each
+# build/release maps to.
+printf 'ghostty: %s\ncommit:  %s\npatches: %s\n' \
+    "$DESCRIBE" "$HEAD" "$PATCH_NAMES" > GHOSTTY_VERSION
 say "Ghostty submodule @ $DESCRIBE ($HEAD)"
+say "patches: $PATCH_NAMES"
+
+if [ "${#PATCHES[@]}" -gt 0 ]; then
+    # A dirty worktree means an earlier run died before its trap fired,
+    # or someone edited the submodule by hand. Either way the patches
+    # below would apply on top of unknown state, so refuse rather than
+    # guess.
+    [ -z "$(git -C "$GHOSTTY_DIR" status --porcelain)" ] \
+        || fail "$GHOSTTY_DIR has local changes — capture them as a patch under patches/, or discard with 'git -C $GHOSTTY_DIR checkout -- .' plus removing any untracked files it lists"
+
+    # Paths the series leaves untracked. `git checkout -- .` restores
+    # tracked files but leaves these, and the dirty check above would then
+    # refuse the next build. Refreshed after every apply, so a series that
+    # fails partway still cleans up what the earlier patches created.
+    #
+    # Derived from the worktree rather than from `git apply --summary`
+    # create-mode lines, which miss rename and copy destinations. The
+    # preflight above guarantees the worktree was clean, so anything
+    # untracked here came from a patch. A tracked file that a patch
+    # deleted is never listed, and `checkout` restores it.
+    #
+    # Sampled before the build starts: zig and xcodebuild leave untracked
+    # files of their own, and those are not ours to delete.
+    PATCH_ADDED_FILES=""
+
+    # Armed before the first apply so a failure mid-series still reverts.
+    restore_ghostty_tree() {
+        local rc=$?
+        git -C "$GHOSTTY_DIR" checkout -- . >/dev/null 2>&1 || true
+        if [ -n "$PATCH_ADDED_FILES" ]; then
+            while IFS= read -r added; do
+                [ -n "$added" ] && rm -f "$GHOSTTY_DIR/$added"
+            done <<< "$PATCH_ADDED_FILES"
+        fi
+        exit "$rc"
+    }
+    trap restore_ghostty_tree EXIT
+
+    # Applied in order, failing on the first that doesn't take. Checking
+    # each against the pristine tree first would reject a patch that
+    # legitimately builds on an earlier one in the series.
+    for patch_file in "${PATCHES[@]}"; do
+        git -C "$GHOSTTY_DIR" apply "$patch_file" \
+            || fail "$(basename "$patch_file") does not apply to $DESCRIBE — regenerate it against the current pin (see patches/README.md)"
+        PATCH_ADDED_FILES=$(git -C "$GHOSTTY_DIR" status --porcelain --untracked-files=all 2>/dev/null \
+            | sed -n 's/^?? //p')
+    done
+    say "applied ${#PATCHES[@]} patch(es) to $GHOSTTY_DIR"
+fi
 
 # Resolve the zig toolchain — keg-only Homebrew zig@0.15 only.
 if command -v brew >/dev/null 2>&1 \
@@ -159,11 +233,29 @@ while :; do
 done
 say "build quiesced — verifying the embedding C API"
 
+# Every C symbol the package promises its consumers. A patch that adds
+# a new export adds it here too, so a silently-dropped patch fails the
+# release gate rather than surfacing as a link error downstream.
+REQUIRED_SYMBOLS=(
+    ghostty_surface_new
+    ghostty_surface_read_text_format
+)
+
 EMBED_LIB=""
+MISSING_SYMBOLS=""
 while IFS= read -r lib; do
-    if nm "$lib" 2>/dev/null | grep -q ' T _ghostty_surface_new$'; then
+    syms=$(nm "$lib" 2>/dev/null || true)
+    # Here-string, not `printf | grep -q`: see the same note in release.sh
+    # (pipefail + early grep exit = SIGPIPE = false "missing").
+    missing=""
+    for sym in "${REQUIRED_SYMBOLS[@]}"; do
+        grep -q " T _${sym}\$" <<< "$syms" \
+            || missing="${missing:+$missing }$sym"
+    done
+    if [ -z "$missing" ]; then
         EMBED_LIB="$lib"; break
     fi
+    MISSING_SYMBOLS="$missing"
 done < <(find "$ARTIFACT_SRC" -name 'libghostty*.a' -path '*macos*' 2>/dev/null)
 # NON-fatal here by design. The embedding symbol is finalized by an
 # orphaned libtool whose completion is decoupled from this process —
@@ -175,9 +267,9 @@ done < <(find "$ARTIFACT_SRC" -name 'libghostty*.a' -path '*macos*' 2>/dev/null)
 if [ -z "$EMBED_LIB" ]; then
     any=$(find "$ARTIFACT_SRC" -name 'libghostty*.a' -path '*macos*' 2>/dev/null | head -1)
     sym_count=$(nm "$any" 2>/dev/null | grep -c '_ghostty_' || true)
-    say "WARNING: embedding C API not visible yet (best candidate ${sym_count:-0} ghostty_ symbols). The orphaned libtool may still be finalizing — re-check dist/ before releasing; release.sh will gate."
+    say "WARNING: embedding C API incomplete (missing: ${MISSING_SYMBOLS:-unknown}; best candidate ${sym_count:-0} ghostty_ symbols). The orphaned libtool may still be finalizing — re-check dist/ before releasing; release.sh will gate."
 else
-    say "embedding C API present in $(basename "$EMBED_LIB")"
+    say "embedding C API present in $(basename "$EMBED_LIB") (${#REQUIRED_SYMBOLS[@]} required symbols)"
 fi
 
 [ -f "$RESOURCE_SRC/terminfo/78/xterm-ghostty" ] \

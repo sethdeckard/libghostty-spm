@@ -39,13 +39,33 @@ ZIP=dist/GhosttyKit.xcframework.zip
 # the build raced and the dist copy is incomplete, FAIL: never publish
 # a libghostty without the embedding C API. Recovery is manual: wait
 # for the build to fully settle, re-run release (it rebuilds clean).
+#
+# The symbol list is the package's C API promise: every export a patch
+# under patches/ adds belongs here, so a patch that silently stopped
+# applying fails the release instead of shipping a lib without it.
+# Keep it in step with REQUIRED_SYMBOLS in build-xcframework.sh.
+REQUIRED_SYMBOLS=(
+    ghostty_surface_new
+    ghostty_surface_read_text_format
+)
+
 DIST_LIB=$(find "$XCF" -name 'libghostty*.a' -path '*macos*' 2>/dev/null | head -1)
-if [ -z "$DIST_LIB" ] || ! nm "$DIST_LIB" 2>/dev/null | grep -q ' T _ghostty_surface_new$'; then
-    sc=$(nm "$DIST_LIB" 2>/dev/null | grep -c '_ghostty_' || true)
-    echo "release: error: dist xcframework lacks the embedding C API (ghostty_surface_new absent; ${sc:-0} ghostty_ symbols). The build raced the orphaned libtool — wait for it to fully settle, then re-run." >&2
+DIST_SYMS=$(nm "$DIST_LIB" 2>/dev/null || true)
+# Here-string, not `printf | grep -q`: under pipefail, grep -q exiting
+# at the match SIGPIPEs printf (rc 141) whenever the symbol is not near
+# the end of nm's ~68k lines, and the pipeline reports a present symbol
+# as missing.
+MISSING=""
+for sym in "${REQUIRED_SYMBOLS[@]}"; do
+    grep -q " T _${sym}\$" <<< "$DIST_SYMS" \
+        || MISSING="${MISSING:+$MISSING }$sym"
+done
+if [ -z "$DIST_LIB" ] || [ -n "$MISSING" ]; then
+    sc=$(printf '%s\n' "$DIST_SYMS" | grep -c '_ghostty_' || true)
+    echo "release: error: dist xcframework lacks required C API symbols (missing: ${MISSING:-all}; ${sc:-0} ghostty_ symbols). Either the build raced the orphaned libtool — wait for it to fully settle, then re-run — or a patch under patches/ did not apply." >&2
     exit 1
 fi
-say "publish gate OK — embedding C API present in $(basename "$DIST_LIB")"
+say "publish gate OK — ${#REQUIRED_SYMBOLS[@]} required C API symbols present in $(basename "$DIST_LIB")"
 
 # Second half of the same invariant. The xcframework ships as a release
 # asset built right now; GhosttyKitResources ships from the git tree at
@@ -62,6 +82,18 @@ if [ -n "$(git status --porcelain -- "$RES_TREE" 2>/dev/null)" ]; then
     exit 1
 fi
 say "resources gate OK — committed tree matches the built Ghostty"
+
+# Third arm of the same invariant. The binary is built from the pinned
+# Ghostty PLUS whatever sits in patches/, and GHOSTTY_VERSION names the
+# series that went in. An uncommitted or edited patch publishes a binary
+# nobody can rebuild from the tag, which is the one thing the other two
+# gates exist to prevent. --porcelain catches untracked patch files too.
+if [ -n "$(git status --porcelain -- patches GHOSTTY_VERSION 2>/dev/null)" ]; then
+    echo "release: error: patches/ or GHOSTTY_VERSION is uncommitted, so $TAG would not carry the source the binary was built from. Commit them onto $TAG, then re-run." >&2
+    git status --porcelain -- patches GHOSTTY_VERSION >&2
+    exit 1
+fi
+say "patch gate OK — patches/ and GHOSTTY_VERSION are committed"
 
 say "zipping $XCF (ditto, framework-safe)"
 rm -f "$ZIP"
