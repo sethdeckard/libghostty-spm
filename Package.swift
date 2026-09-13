@@ -37,8 +37,8 @@ import PackageDescription
 // release.sh reads this and the tag to build the asset URL; it does
 // not guess it.
 let repoSlug = "sethdeckard/libghostty-spm"
-let releaseTag = "v0.1.1"
-let checksum = "c00624be664c49a9e9353fc785b7bfef53d4e218abb832a69f0aa7a33721bc7f"
+let releaseTag = "v0.2.0"
+let checksum = "8e6476cf7b69ff3739812f3f59c50fe5371b189a33a16edfbeb0f21646a3fb3a"
 let assetURL =
     "https://github.com/" + repoSlug + "/releases/download/"
     + releaseTag + "/GhosttyKit.xcframework.zip"
