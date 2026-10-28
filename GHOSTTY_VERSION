@@ -1,3 +1,3 @@
 ghostty: v1.4.0-7-g46e9dc9a9
 commit:  46e9dc9a927b2e7e7cba79e6902c176127dbdf2c
-patches: 0001-surface-read-text-format.patch
+patches: 0001-surface-read-text-format.patch 0002-surface-history-and-initial-output.patch

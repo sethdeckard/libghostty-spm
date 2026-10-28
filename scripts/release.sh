@@ -47,6 +47,7 @@ ZIP=dist/GhosttyKit.xcframework.zip
 REQUIRED_SYMBOLS=(
     ghostty_surface_new
     ghostty_surface_read_text_format
+    ghostty_surface_read_history
 )
 
 DIST_LIB=$(find "$XCF" -name 'libghostty*.a' -path '*macos*' 2>/dev/null | head -1)

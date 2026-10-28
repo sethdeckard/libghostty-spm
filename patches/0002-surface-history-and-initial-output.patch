@@ -1,0 +1,260 @@
+diff --git i/include/ghostty.h w/include/ghostty.h
+index b6973fc59..3f7e486a8 100644
+--- i/include/ghostty.h
++++ w/include/ghostty.h
+@@ -523,6 +523,7 @@ typedef struct {
+   const char* initial_input;
+   bool wait_after_command;
+   ghostty_surface_context_e context;
++  const char* initial_output;
+ } ghostty_surface_config_s;
+ 
+ typedef struct {
+@@ -1248,6 +1249,10 @@ GHOSTTY_API bool ghostty_surface_read_text_format(ghostty_surface_t,
+                                                      ghostty_selection_s,
+                                                      ghostty_text_format_e,
+                                                      ghostty_text_s*);
++GHOSTTY_API bool ghostty_surface_read_history(ghostty_surface_t,
++                                                 ghostty_text_format_e,
++                                                 uint32_t,
++                                                 ghostty_text_s*);
+ GHOSTTY_API void ghostty_surface_free_text(ghostty_surface_t, ghostty_text_s*);
+ 
+ #ifdef __APPLE__
+diff --git i/src/Surface.zig w/src/Surface.zig
+index 1bc0c976e..de5748d38 100644
+--- i/src/Surface.zig
++++ w/src/Surface.zig
+@@ -750,6 +750,14 @@ pub fn init(
+     // to duplicate.
+     try self.resize(self.size.screen);
+ 
++    // Process any output the runtime wants shown before the child's own,
++    // such as restored scrollback. This runs after the resize, so it wraps
++    // at the real grid width, and before the IO thread starts, so it lands
++    // above the child's first output. Runtimes without the hook skip it.
++    if (comptime @hasDecl(apprt.runtime.Surface, "initialOutput")) {
++        if (rt_surface.initialOutput()) |output| self.io.processOutput(output);
++    }
++
+     // Start our renderer thread
+     self.renderer_thr = try std.Thread.spawn(
+         .{},
+diff --git i/src/apprt/embedded.zig w/src/apprt/embedded.zig
+index 10c6fe971..1b580b40a 100644
+--- i/src/apprt/embedded.zig
++++ w/src/apprt/embedded.zig
+@@ -444,6 +444,85 @@ pub const EnvVar = extern struct {
+     value: [*:0]const u8,
+ };
+ 
++/// `bytes` with everything but display removed: printable text, CR, LF,
++/// tab, and SGR sequences (`ESC [` digits, `;`, `:` and a final `m`).
++/// Every other C0 control, DEL, C1 control (U+0080 to U+009F), and escape
++/// sequence is dropped, each escape sequence whole, so none of its bytes
++/// print as text. Printing, line movement, and SGR only change terminal
++/// state; none of them goes through a stream handler message writer, the
++/// path that can block on a full worker queue.
++fn displayOnlyOutput(alloc: Allocator, bytes: []const u8) Allocator.Error![]u8 {
++    var out: std.ArrayList(u8) = .empty;
++    errdefer out.deinit(alloc);
++    try out.ensureTotalCapacity(alloc, bytes.len);
++    var i: usize = 0;
++    while (i < bytes.len) {
++        const byte = bytes[i];
++        switch (byte) {
++            '\n', '\r', '\t' => {
++                out.appendAssumeCapacity(byte);
++                i += 1;
++            },
++            0x1B => i = displayOnlyEscape(bytes, i, &out),
++            0x00...0x08, 0x0B, 0x0C, 0x0E...0x1A, 0x1C...0x1F, 0x7F => i += 1,
++            0xC2 => if (i + 1 < bytes.len and bytes[i + 1] >= 0x80 and bytes[i + 1] <= 0x9F) {
++                i += 2;
++            } else {
++                out.appendAssumeCapacity(byte);
++                i += 1;
++            },
++            else => {
++                out.appendAssumeCapacity(byte);
++                i += 1;
++            },
++        }
++    }
++    return out.toOwnedSlice(alloc);
++}
++
++/// Handle the escape sequence starting at `bytes[start]` (an ESC) for
++/// `displayOnlyOutput`: append it to `out` if it is SGR, and return the
++/// index just past it either way. An unterminated sequence runs to the
++/// end of `bytes`.
++fn displayOnlyEscape(bytes: []const u8, start: usize, out: *std.ArrayList(u8)) usize {
++    if (start + 1 >= bytes.len) return bytes.len;
++    const kind = bytes[start + 1];
++    switch (kind) {
++        // CSI: parameters and intermediates up to a final byte.
++        '[' => {
++            var j = start + 2;
++            var sgr = true;
++            while (j < bytes.len) : (j += 1) {
++                const c = bytes[j];
++                if (c >= 0x40 and c <= 0x7E) break;
++                switch (c) {
++                    '0'...'9', ';', ':' => {},
++                    else => sgr = false,
++                }
++            }
++            if (j >= bytes.len) return bytes.len;
++            if (sgr and bytes[j] == 'm') out.appendSliceAssumeCapacity(bytes[start .. j + 1]);
++            return j + 1;
++        },
++        // OSC ends at BEL or ST; DCS, SOS, PM, and APC end at ST.
++        ']', 'P', 'X', '^', '_' => {
++            var j = start + 2;
++            while (j < bytes.len) : (j += 1) {
++                if (kind == ']' and bytes[j] == 0x07) return j + 1;
++                if (bytes[j] == 0x1B and j + 1 < bytes.len and bytes[j + 1] == '\\') return j + 2;
++            }
++            return bytes.len;
++        },
++        // Intermediates, then one final byte (e.g. ESC ( B).
++        0x20...0x2F => {
++            var j = start + 2;
++            while (j < bytes.len and bytes[j] >= 0x20 and bytes[j] <= 0x2F) : (j += 1) {}
++            return @min(j + 1, bytes.len);
++        },
++        else => return start + 2,
++    }
++}
++
+ pub const Surface = struct {
+     app: *App,
+     platform: Platform,
+@@ -458,6 +537,12 @@ pub const Surface = struct {
+     /// that getTitle works without the implementer needing to save it.
+     title: ?[:0]const u8 = null,
+ 
++    /// The filtered `Options.initial_output` the core surface processes
++    /// during its init, before the IO thread starts, so it lands above
++    /// anything the child process prints. Only set for the duration of
++    /// init.
++    initial_output: ?[]const u8 = null,
++
+     /// Surface initialization options.
+     pub const Options = extern struct {
+         /// The platform that this surface is being initialized for and
+@@ -499,6 +584,19 @@ pub const Surface = struct {
+ 
+         /// Context for the new surface
+         context: apprt.surface.NewSurfaceContext = .window,
++
++        /// Text shown as terminal output before the child process starts,
++        /// so it appears above the child's first output (for example,
++        /// restored scrollback).
++        ///
++        /// Display only. Printable text, CR, LF, tab, and SGR sequences
++        /// are kept; every other control byte and escape sequence is
++        /// discarded before parsing (see `displayOnlyOutput`). It can't
++        /// make the terminal reply to the child, set a title, ring the
++        /// bell, or touch the clipboard. Filtering prevents parser actions
++        /// from blocking on worker queues before the IO and renderer
++        /// threads start.
++        initial_output: ?[*:0]const u8 = null,
+     };
+ 
+     pub fn init(self: *Surface, app: *App, opts: Options) !void {
+@@ -612,6 +710,19 @@ pub const Surface = struct {
+             config.@"wait-after-command" = true;
+         }
+ 
++        // Initial output is only needed while the core surface inits,
++        // which is when it asks for it (see `initialOutput`).
++        var initial_output: ?[]u8 = null;
++        defer if (initial_output) |output| app.core_app.alloc.free(output);
++        if (opts.initial_output) |c_output| {
++            initial_output = try displayOnlyOutput(
++                app.core_app.alloc,
++                std.mem.sliceTo(c_output, 0),
++            );
++            if (initial_output.?.len > 0) self.initial_output = initial_output;
++        }
++        defer self.initial_output = null;
++
+         // Initialize our surface right away. We're given a view that is
+         // ready to use.
+         try self.core_surface.init(
+@@ -667,6 +778,12 @@ pub const Surface = struct {
+         }
+     }
+ 
++    /// Output the core surface processes during its init, before its IO
++    /// thread starts. See `Options.initial_output`.
++    pub fn initialOutput(self: *const Surface) ?[]const u8 {
++        return self.initial_output;
++    }
++
+     pub fn core(self: *Surface) *CoreSurface {
+         return &self.core_surface;
+     }
+@@ -1999,6 +2116,61 @@ pub const CAPI = struct {
+         return readTextLocked(surface, core_sel, format.core(), result);
+     }
+ 
++    /// Read the primary screen's history in the given format: its last
++    /// `max_rows` rows, from scrollback down to the row holding the
++    /// cursor. Rows below the cursor are excluded, even if they contain
++    /// text.
++    ///
++    /// Always reads the primary screen, never the alternate one, so a
++    /// full-screen program such as an editor doesn't stand in for the
++    /// shell's history while it runs.
++    ///
++    /// Formatting is as for ghostty_surface_read_text_format. Free the
++    /// result with ghostty_surface_free_text. This is an expensive
++    /// operation; call it rarely.
++    export fn ghostty_surface_read_history(
++        surface: *Surface,
++        format: TextFormat,
++        max_rows: u32,
++        result: *Text,
++    ) bool {
++        if (max_rows == 0) return false;
++        surface.core_surface.renderer_state.mutex.lockUncancelable(global.io());
++        defer surface.core_surface.renderer_state.mutex.unlock(global.io());
++
++        const screen = surface.core_surface.renderer_state.terminal.screens.get(.primary) orelse
++            return false;
++        const pages = &screen.pages;
++
++        // The cursor row, counted from the top of the whole screen.
++        const cursor_pin = screen.cursor.page_pin.*;
++        const cursor_row = (pages.pointFromPin(.screen, cursor_pin) orelse return false).screen.y;
++        const first_row = cursor_row -| (max_rows - 1);
++
++        const start = pages.pin(.{ .screen = .{ .x = 0, .y = first_row } }) orelse return false;
++        const end = pages.pin(.{ .screen = .{ .x = pages.cols - 1, .y = cursor_row } }) orelse
++            return false;
++
++        const text = screen.selectionString(global.alloc(), .{
++            .sel = terminal.Selection.init(start, end, false),
++            .trim = false,
++            .emit = format.core(),
++        }) catch |err| {
++            log.warn("error reading history err={}", .{err});
++            return false;
++        };
++
++        result.* = .{
++            .tl_px_x = -1,
++            .tl_px_y = -1,
++            .offset_start = 0,
++            .offset_len = 0,
++            .text = text.ptr,
++            .text_len = text.len,
++        };
++        return true;
++    }
++
+     fn readTextLocked(
+         surface: *Surface,
+         core_sel: terminal.Selection,

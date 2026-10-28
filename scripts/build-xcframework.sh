@@ -255,6 +255,7 @@ say "build quiesced — verifying the embedding C API"
 REQUIRED_SYMBOLS=(
     ghostty_surface_new
     ghostty_surface_read_text_format
+    ghostty_surface_read_history
 )
 
 EMBED_LIB=""
