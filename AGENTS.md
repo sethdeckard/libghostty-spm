@@ -28,12 +28,16 @@ Every build flag and toolchain choice below cost real debugging time.
 Changing any of them silently produces a libghostty that links but
 lacks the embedding C API.
 
-- **zig: Homebrew `zig@0.15` only.** The vanilla ziglang.org 0.15.2
-  tarball and asdf/mise installs **cannot link the macOS 26 SDK**
-  (bundled libSystem stubs predate the SDK tbd dropping plain
-  `arm64-macos`). Homebrew's build patches this; Ghostty's own Nix
-  devShell pins the brew variant for the same reason. `brew install
-  zig@0.15`.
+- **zig: Homebrew `zig`, at the line the pin requires.** The build
+  reads `minimum_zig_version` from `vendor/ghostty/build.zig.zon` and
+  refuses any other minor, or an older patch (0.17.0 for the current
+  pin). Vanilla ziglang.org tarballs and asdf/mise installs have failed
+  to link the macOS SDK before (bundled libSystem stubs lagged the SDK
+  tbd dropping plain `arm64-macos`). Homebrew's build patches this.
+  This package requires Homebrew Zig. Ghostty's Nix devShell supplies its
+  own pinned Zig toolchain.
+  `brew install zig`, or `brew upgrade zig` after a pin bump that moves
+  the minor.
 - **Metal Toolchain** is a separate Xcode 26 component:
   `xcodebuild -downloadComponent MetalToolchain`. An Xcode update drops
   it. The build then fails compiling `shaders.metal` with "cannot

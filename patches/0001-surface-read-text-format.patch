@@ -1,8 +1,8 @@
 diff --git i/include/ghostty.h w/include/ghostty.h
-index b099741fc..5850dd54a 100644
+index 9a12b9cad..b6973fc59 100644
 --- i/include/ghostty.h
 +++ w/include/ghostty.h
-@@ -440,6 +440,11 @@ typedef struct {
+@@ -481,6 +481,11 @@ typedef struct {
    bool rectangle;
  } ghostty_selection_s;
  
@@ -14,7 +14,7 @@ index b099741fc..5850dd54a 100644
  typedef struct {
    const char* key;
    const char* value;
-@@ -1159,6 +1164,10 @@ GHOSTTY_API bool ghostty_surface_read_selection(ghostty_surface_t, ghostty_text_
+@@ -1239,6 +1244,10 @@ GHOSTTY_API bool ghostty_surface_read_selection(ghostty_surface_t, ghostty_text_
  GHOSTTY_API bool ghostty_surface_read_text(ghostty_surface_t,
                                                ghostty_selection_s,
                                                ghostty_text_s*);
@@ -26,10 +26,10 @@ index b099741fc..5850dd54a 100644
  
  #ifdef __APPLE__
 diff --git i/src/Surface.zig w/src/Surface.zig
-index 5d16f3326..c485813bf 100644
+index 369bb2399..1bc0c976e 100644
 --- i/src/Surface.zig
 +++ w/src/Surface.zig
-@@ -1919,11 +1919,30 @@ pub fn dumpTextLocked(
+@@ -2043,11 +2043,30 @@ pub fn dumpTextLocked(
      self: *Surface,
      alloc: Allocator,
      sel: terminal.Selection,
@@ -61,10 +61,10 @@ index 5d16f3326..c485813bf 100644
      errdefer alloc.free(text);
  
 diff --git i/src/apprt/embedded.zig w/src/apprt/embedded.zig
-index 730913eba..a6aa81a23 100644
+index 697f0a786..10c6fe971 100644
 --- i/src/apprt/embedded.zig
 +++ w/src/apprt/embedded.zig
-@@ -1304,6 +1304,24 @@ pub const CAPI = struct {
+@@ -1610,6 +1610,24 @@ pub const CAPI = struct {
          }
      };
  
@@ -89,7 +89,7 @@ index 730913eba..a6aa81a23 100644
      // ghostty_point_s
      const Point = extern struct {
          tag: Tag,
-@@ -1618,7 +1636,7 @@ pub const CAPI = struct {
+@@ -1918,7 +1936,7 @@ pub const CAPI = struct {
          const core_sel = core_surface.io.terminal.screens.active.selection orelse return false;
  
          // Read the text from the selection.
@@ -98,7 +98,7 @@ index 730913eba..a6aa81a23 100644
      }
  
      /// Read some arbitrary text from the surface.
-@@ -1638,20 +1656,62 @@ pub const CAPI = struct {
+@@ -1938,20 +1956,62 @@ pub const CAPI = struct {
              surface.core_surface.renderer_state.terminal.screens.active,
          ) orelse return false;
  
@@ -136,8 +136,8 @@ index 730913eba..a6aa81a23 100644
 +        format: TextFormat,
 +        result: *Text,
 +    ) bool {
-+        surface.core_surface.renderer_state.mutex.lock();
-+        defer surface.core_surface.renderer_state.mutex.unlock();
++        surface.core_surface.renderer_state.mutex.lockUncancelable(global.io());
++        defer surface.core_surface.renderer_state.mutex.unlock(global.io());
 +
 +        const core_sel = sel.core(
 +            surface.core_surface.renderer_state.terminal.screens.active,
@@ -157,13 +157,13 @@ index 730913eba..a6aa81a23 100644
          // Get our text directly from the core surface.
 -        const text = core_surface.dumpTextLocked(
 +        const text = core_surface.dumpTextFormattedLocked(
-             global.alloc,
+             global.alloc(),
              core_sel,
 +            emit,
          ) catch |err| {
              log.warn("error reading text err={}", .{err});
              return false;
-@@ -2218,7 +2278,7 @@ pub const CAPI = struct {
+@@ -2547,7 +2607,7 @@ pub const CAPI = struct {
              };
  
              // Read the selection
@@ -173,29 +173,29 @@ index 730913eba..a6aa81a23 100644
  
          export fn ghostty_inspector_metal_init(ptr: *Inspector, device: objc.c.id) bool {
 diff --git i/src/terminal/Screen.zig w/src/terminal/Screen.zig
-index 39fdd6109..e0e0e6a1f 100644
+index 0fd016774..2b3fa444c 100644
 --- i/src/terminal/Screen.zig
 +++ w/src/terminal/Screen.zig
-@@ -15,6 +15,7 @@ const Selection = @import("Selection.zig");
- const PageList = @import("PageList.zig");
+@@ -18,6 +18,7 @@ const selection_codepoints = @import("selection_codepoints.zig");
  const StringMap = @import("StringMap.zig");
  const ScreenFormatter = @import("formatter.zig").ScreenFormatter;
+ const PinMap = @import("formatter.zig").PinMap;
 +const Format = @import("formatter.zig").Format;
  const osc = @import("osc.zig");
  const pagepkg = @import("page.zig");
  const point = @import("point.zig");
-@@ -2442,6 +2443,10 @@ pub const SelectionString = struct {
+@@ -3112,6 +3113,10 @@ pub const SelectionString = struct {
+ 
      /// If true, trim whitespace around the selection.
      trim: bool = true,
- 
++
 +    /// The format to emit. Plain text by default; styled formats such as
 +    /// `.vt` preserve colors and styles as escape sequences.
 +    emit: Format = .plain,
-+
-     /// If non-null, a stringmap will be written here. This will use
-     /// the same allocator as the call to selectionString. The string will
-     /// be duplicated here and in the return value so both must be freed.
-@@ -2470,7 +2475,7 @@ pub fn selectionString(
+ };
+ 
+ /// Returns the raw text associated with a selection. This will unwrap
+@@ -3158,7 +3163,7 @@ fn selectionStringImpl(
      var formatter: ScreenFormatter = .init(
          self,
          .{

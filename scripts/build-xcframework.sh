@@ -11,11 +11,13 @@
 # ships in-repo via the GhosttyKitResources SwiftPM target, so every
 # build regenerates it and `git diff` surfaces any Ghostty drift).
 #
-# Requires: Homebrew zig@0.15. The vanilla ziglang.org 0.15.2 tarball
-# (and asdf/mise installs) cannot link against the macOS 26 SDK — its
-# bundled libSystem stubs predate the SDK tbd change that dropped
-# plain `arm64-macos`. Homebrew's zig build patches this; Ghostty's
-# own Nix devShell pins the brew variant for the same reason.
+# Requires: Homebrew zig, at the line the pinned Ghostty's
+# `minimum_zig_version` (build.zig.zon) names. Vanilla ziglang.org
+# tarballs (and asdf/mise installs) have failed to link against the
+# current macOS SDK before: their bundled libSystem stubs lagged the SDK
+# tbd change that dropped plain `arm64-macos`. Homebrew's zig build
+# patches this. This package requires Homebrew Zig. Ghostty's Nix
+# devShell supplies its own pinned Zig toolchain.
 
 set -euo pipefail
 
@@ -39,10 +41,15 @@ fail() { printf "build-xcframework: error: %s\n" "$1" >&2; exit 1; }
 # ── Preflight ──────────────────────────────────────────────────────────
 [ -f "$GHOSTTY_DIR/build.zig" ] \
     || fail "$GHOSTTY_DIR is empty — run 'git submodule update --init vendor/ghostty'"
-PIN=$(git rev-parse --quiet HEAD:"$GHOSTTY_DIR" 2>/dev/null || echo unknown)
+# The pin is the gitlink in the index, not in HEAD, so a staged pin bump
+# builds before it is committed. A committed pin reads the same either
+# way. Publishing still needs the bump committed: this build records the
+# pin in GHOSTTY_VERSION, and release.sh's pin gate refuses unless HEAD's
+# committed gitlink is that commit.
+PIN=$(git rev-parse --quiet :"$GHOSTTY_DIR" 2>/dev/null || echo unknown)
 HEAD=$(git -C "$GHOSTTY_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
 [ "$PIN" = "unknown" ] || [ "$PIN" = "$HEAD" ] \
-    || fail "submodule HEAD ($HEAD) != pinned gitlink ($PIN) — 'git submodule update vendor/ghostty'"
+    || fail "submodule HEAD ($HEAD) != staged gitlink ($PIN) — 'git submodule update vendor/ghostty'"
 DESCRIBE=$(git -C "$GHOSTTY_DIR" describe --tags --always 2>/dev/null || echo unknown)
 
 # ── Patches ────────────────────────────────────────────────────────────
@@ -121,23 +128,32 @@ if [ "${#PATCHES[@]}" -gt 0 ]; then
     say "applied ${#PATCHES[@]} patch(es) to $GHOSTTY_DIR"
 fi
 
-# Resolve the zig toolchain — keg-only Homebrew zig@0.15 only.
+# Resolve the zig toolchain: Homebrew zig, checked against the
+# pinned Ghostty's `minimum_zig_version`. Ghostty moves zig minors
+# between releases and a different minor does not build it, so the
+# major.minor must match and the patch must be at least the minimum.
+ZON="$GHOSTTY_DIR/build.zig.zon"
+ZIG_MIN=$(sed -n 's/.*\.minimum_zig_version = "\([0-9.]*\)".*/\1/p' "$ZON")
+[ -n "$ZIG_MIN" ] || fail "could not read minimum_zig_version from $ZON"
+ZIG_MIN_LINE=${ZIG_MIN%.*}
+ZIG_MIN_PATCH=${ZIG_MIN##*.}
+
 if command -v brew >/dev/null 2>&1 \
-    && BREW_ZIG15=$(brew --prefix zig@0.15 2>/dev/null) \
-    && [ -x "$BREW_ZIG15/bin/zig" ]; then
-    ZIG_BIN="$BREW_ZIG15/bin/zig"
-    say "using Homebrew zig@0.15: $ZIG_BIN"
+    && BREW_ZIG=$(brew --prefix zig 2>/dev/null) \
+    && [ -x "$BREW_ZIG/bin/zig" ]; then
+    ZIG_BIN="$BREW_ZIG/bin/zig"
+    say "using Homebrew zig: $ZIG_BIN"
 else
-    fail "Homebrew zig@0.15 not found — 'brew install zig@0.15'. The vanilla ziglang.org 0.15.2 cannot link on macOS 26."
+    fail "Homebrew zig not found — 'brew install zig'. Vanilla ziglang.org builds have failed to link against the macOS SDK."
 fi
 
 ZIG_VER=$("$ZIG_BIN" version)
 case "$ZIG_VER" in
-    0.15.*) zig_patch=${ZIG_VER#0.15.}; zig_patch=${zig_patch%%[-.+]*} ;;
-    *)      fail "zig $ZIG_VER unsupported — Ghostty needs the 0.15 line (patch >= 2)." ;;
+    "$ZIG_MIN_LINE".*) zig_patch=${ZIG_VER#"$ZIG_MIN_LINE".}; zig_patch=${zig_patch%%[-.+]*} ;;
+    *)      fail "zig $ZIG_VER unsupported — the pinned Ghostty needs the $ZIG_MIN_LINE line ($ZIG_MIN+). 'brew upgrade zig'." ;;
 esac
-{ [ "$zig_patch" -ge 2 ] 2>/dev/null; } \
-    || fail "zig $ZIG_VER too old — needs 0.15.2+. 'brew upgrade zig@0.15'."
+{ [ "$zig_patch" -ge "$ZIG_MIN_PATCH" ] 2>/dev/null; } \
+    || fail "zig $ZIG_VER too old — needs $ZIG_MIN+. 'brew upgrade zig'."
 
 # Pin the macOS SDK explicitly. zig probes the bare
 # `xcrun --show-sdk-path`, which on some hosts returns a stale or
@@ -160,7 +176,7 @@ say "SDKROOT $SDKROOT"
 #       symbols. Keep perf, keep symbols.
 #   -Demit-xcframework=true  explicitly emit the GhosttyKit xcframework
 #   -Dxcframework-target=native
-#       arm64-only slice via GhosttyLib.initStatic (libghostty-fat.a).
+#       Native macOS slice via GhosttyLib.initStatic (libghostty-internal.a).
 #
 # We deliberately DO NOT pass -Demit-macos-app=false: the full lib
 # that exports the embedding C API (ghostty_init / ghostty_app_new /

@@ -54,13 +54,32 @@ the binary was built from.
 
 ## On a Ghostty pin bump
 
-Run `make build` after moving the pin. It applies the series in order and
-fails with the name of the first patch that no longer applies, which is
-the check you want. Checking each patch independently against a pristine
-tree gives a false failure for any patch that builds on an earlier one.
+Move the pin, stage it, then build:
 
-Regenerate whatever fails by redoing the change by hand against the new
-source.
+```sh
+git -C vendor/ghostty fetch origin main
+git -C vendor/ghostty checkout <commit>
+git add vendor/ghostty
+make build
+```
+
+Stage the gitlink first. `make build` starts with `git submodule update`,
+which checks the submodule out at the staged gitlink. An unstaged bump is
+reset to the committed pin, which can prevent patches regenerated for the
+new pin from applying. The build accepts a staged bump that isn't committed yet, so you
+can verify the bump before committing it.
+
+The build applies the series in order and fails with the name of the
+first patch that no longer applies, which is the check you want. Checking
+each patch independently against a pristine tree gives a false failure for
+any patch that builds on an earlier one.
+
+Regenerate whatever fails by redoing the change against the new source.
+`git -C vendor/ghostty apply --3way <patch>` does much of it, leaving
+conflict markers only where upstream changed the same lines. The
+submodule has the old pin's objects after a fetch, which the three-way
+apply needs. Capture the result with `git diff HEAD`, since the
+three-way apply stages some files and leaves others conflicted.
 
 ## Upstreaming
 

@@ -95,6 +95,22 @@ if [ -n "$(git status --porcelain -- patches GHOSTTY_VERSION 2>/dev/null)" ]; th
 fi
 say "patch gate OK — patches/ and GHOSTTY_VERSION are committed"
 
+# Fourth arm. build-xcframework.sh builds whatever gitlink is staged, so
+# a pin bump can be verified before it is committed. The gates above
+# don't cover the gitlink itself: committing patches/ and GHOSTTY_VERSION
+# while leaving the bump only staged would tag the old pin under a
+# binary built from the new one. So the commit the build recorded must be
+# the gitlink committed in HEAD, with nothing staged or modified on top.
+BUILT_PIN=$(sed -n 's/^commit: *//p' GHOSTTY_VERSION)
+COMMITTED_PIN=$(git rev-parse --quiet HEAD:vendor/ghostty 2>/dev/null || echo unknown)
+if [ -z "$BUILT_PIN" ] || [ "$BUILT_PIN" != "$COMMITTED_PIN" ] \
+    || [ -n "$(git status --porcelain -- vendor/ghostty 2>/dev/null)" ]; then
+    echo "release: error: the binary was built from Ghostty ${BUILT_PIN:-unknown}, but HEAD pins vendor/ghostty at $COMMITTED_PIN (or the gitlink has uncommitted changes). Commit the pin onto $TAG, then re-run." >&2
+    git status --porcelain -- vendor/ghostty >&2
+    exit 1
+fi
+say "pin gate OK — HEAD pins the Ghostty commit the binary was built from"
+
 say "zipping $XCF (ditto, framework-safe)"
 rm -f "$ZIP"
 ditto -c -k --sequesterRsrc --keepParent "$XCF" "$ZIP"

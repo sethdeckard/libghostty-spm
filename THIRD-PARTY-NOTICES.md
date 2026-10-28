@@ -42,7 +42,7 @@ SOFTWARE.
 `GhosttyKit.xcframework` statically links Ghostty's dependencies, and
 `GhosttyKitResources` ships Ghostty's runtime resource tree. The
 principal components, verified against the pin in `GHOSTTY_VERSION`
-(Ghostty `e90b7c9`):
+(Ghostty `46e9dc9`, seven commits after v1.4.0):
 
 - **Zig modules** — libxev, zig-objc, libvaxis, zf, uucode, zigimg
   (MIT); z2d (MPL-2.0).

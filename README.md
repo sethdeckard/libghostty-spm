@@ -17,12 +17,14 @@ side.**
 libghostty is only buildable from source with a very specific
 toolchain, and that build is fragile on current macOS:
 
-- Ghostty pins an exact zig minor (0.15.x for the pinned commit). The
-  vanilla ziglang.org 0.15.2 tarball — and asdf/mise installs —
-  **cannot link against the macOS 26 SDK**: their bundled libSystem
-  stubs predate the SDK tbd change that dropped plain `arm64-macos`.
-  **Homebrew's `zig@0.15` build patches this**; Ghostty's own Nix
-  devShell pins the brew variant for the same reason.
+- Ghostty pins an exact zig minor, the one its `build.zig.zon` names as
+  `minimum_zig_version` (0.17 for the current pin). The vanilla
+  ziglang.org 0.15.2 tarball and asdf/mise installs **couldn't link
+  against the macOS 26 SDK**, because their bundled libSystem stubs
+  predated the SDK tbd change that dropped plain `arm64-macos`.
+  **Homebrew's `zig` build patches this.** This package requires
+  Homebrew Zig. Ghostty's Nix devShell supplies its own pinned Zig
+  toolchain.
 - Xcode 26 split the Metal compiler into a separate component
   (`xcodebuild -downloadComponent MetalToolchain`).
 - The full libghostty static lib that exports the embedding C API is
@@ -42,7 +44,7 @@ Package.swift                 products: GhosttyKit (.binaryTarget url+checksum),
 Sources/GhosttyKitResources/  tracked resource tree, regenerated each build
 vendor/ghostty/               git submodule @ pinned commit — source + pin
 patches/                      local Ghostty changes, applied per build
-scripts/build-xcframework.sh  brew zig@0.15, the load-bearing flags, symbol gate
+scripts/build-xcframework.sh  Homebrew zig, the required flags, symbol gate
 scripts/release.sh            build → ditto-zip → compute-checksum → gh release
 ```
 
@@ -57,11 +59,15 @@ gitlink always names a real upstream commit. See `patches/README.md`.
 ## Building locally
 
 ```sh
-brew install zig@0.15
+brew install zig                               # the minor the pin's build.zig.zon names
 xcodebuild -downloadComponent MetalToolchain   # after every Xcode update
 git submodule update --init vendor/ghostty
 ./scripts/build-xcframework.sh                 # → dist/GhosttyKit.xcframework
 ```
+
+Run `brew upgrade zig` after a pin bump that moves the minor. The build
+reads the required version from the pin and stops with the version it
+needs rather than starting with the wrong one.
 
 First cold build is several minutes (zig + Metal shaders). The script
 fails fast (one second) if the produced lib lacks the embedding C API.
